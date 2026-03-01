@@ -14,6 +14,15 @@ class History:
     positions: pd.DataFrame
 
 
+@dataclass
+class Context:
+    strategy: Callable
+    date: pd.Timestamp
+    value: float
+    positions: pd.DataFrame
+    prices: pd.DataFrame
+
+
 def run(
     strategy: Callable,
     prices: pd.DataFrame,
@@ -23,7 +32,6 @@ def run(
     Run the trading strategy.
     """
     market_start = prices["date"].min()
-    market_end = prices["date"].max()
     if history is None:
         history = History(
             values=pd.DataFrame(
@@ -34,6 +42,28 @@ def run(
             ),
             positions=pd.DataFrame(columns=["date", "instrument", "value", "weight"]),
         )
+    else:
+        history = History(
+            values=history.values.copy(), positions=history.positions.copy()
+        )
 
+    last_date = history.values["date"].max()
+    ctx = Context(
+        strategy=strategy,
+        date=last_date,
+        value=history.values.loc[last_date, "value"],
+        positions=history.positions[history.positions["date"] == last_date],
+        prices=prices[prices["date"] == last_date],
+    )
     for date, date_prices in prices.groupby("date"):
-        pass
+        if date <= ctx.date:
+            continue
+        value, position = _run1d(ctx, history)
+
+        last_date = date
+        last_positions = position
+        last_prices = date_prices
+
+
+def _run1d(ctx: Context, history: History) -> tuple[float, pd.DataFrame]:
+    return 1.0, pd.DataFrame(columns=["date", "instrument", "value", "weight"])
