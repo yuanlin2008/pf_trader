@@ -37,7 +37,7 @@ def run(
     strategy: Callable,
     rebalance_period: str,
     prices: pd.DataFrame,
-    history: History | None = None,
+    ctx: Context | None = None,
 ) -> History:
     """
     执行策略
@@ -46,83 +46,38 @@ def run(
         strategy: 交易策略函数，接受 Context 和 History 参数
         rebalance_period: 调仓周期，支持 "w"（周）、"m"（月）、"q"（季度）和 "y"（年）
         prices: 包含日期和价格数据的 DataFrame，列名为 "date", "instrument", "price"
-        history: 可选的历史数据，包含之前执行的结果
+        ctx: 可选的上下文信息，用于初始化策略执行环境
     Returns:
         History: 包含完整执行历史的数据对象
 
     """
-    history = _init_history(prices, history)
-    ctx = _init_ctx(history)
+    if ctx is None:
+        ctx = Context(
+            date=prices["date"].min(),
+            value=1.0,
+            positions=pd.DataFrame(columns=["instrument", "value", "weight", "price"]),
+        )
+
+    values = []
+    positions = []
 
     for date, date_prices in prices.groupby("date"):
         date = pd.Timestamp(str(date))
         if date <= ctx.date:
             continue
         date_prices = date_prices[["instrument", "price"]]
-        value, positions = _run1d(strategy, rebalance_period, date, date_prices, ctx)
-        history = _append_history(history, date, value, positions)
-        ctx = _update_ctx(ctx, date, value, positions)
-    return history
+        v, p = _run1d(strategy, rebalance_period, date, date_prices, ctx)
+        ctx.date = date
+        ctx.value = v
+        ctx.positions = p.copy()
+        values.append((date, v))
+        p.insert(0, "date", date)
+        positions.append(p)
 
-
-def _init_ctx(history: History) -> Context:
-    last_date = history.values["date"].max()
-    return Context(
-        date=last_date,
-        value=history.values[history.values["date"] == last_date]["value"].iloc[0],
-        positions=history.positions[history.positions["date"] == last_date][
-            ["instrument", "value", "weight", "price"]
-        ].copy(),
+    return History(
+        values=pd.DataFrame(values, columns=["date", "value"]),
+        positions=pd.concat(positions, ignore_index=True),
     )
-
-
-def _update_ctx(
-    ctx: Context,
-    date: pd.Timestamp,
-    value: float,
-    positions: pd.DataFrame,
-) -> Context:
-    ctx.date = date
-    ctx.value = value
-    ctx.positions = positions
-    return ctx
-
-
-def _init_history(prices: pd.DataFrame, history: History | None) -> History:
-    if history is None:
-        return History(
-            values=pd.DataFrame(
-                {
-                    "date": [prices["date"].min()],
-                    "value": [1.0],
-                }
-            ),
-            positions=pd.DataFrame(
-                columns=["date", "instrument", "value", "weight", "price"]
-            ),
-        )
-    else:
-        return History(values=history.values.copy(), positions=history.positions.copy())
-
-
-def _append_history(
-    history: History, date: pd.Timestamp, value: float, positions: pd.DataFrame
-) -> History:
-    history.values = pd.concat(
-        [
-            history.values,
-            pd.DataFrame({"date": [date], "value": [value]}),
-        ],
-        ignore_index=True,
-    )
-    if not positions.empty:
-        positions["date"] = date
-        # 过滤掉空的 history.positions，只保留非空的 DataFrame
-        concat_list = [positions]
-        if not history.positions.empty:
-            concat_list.insert(0, history.positions)
-        history.positions = pd.concat(concat_list, ignore_index=True)
-    return history
 
 
 def _is_rebalance_date(rebalance_period: str, date: pd.Timestamp, ctx: Context) -> bool:
