@@ -59,11 +59,11 @@ def run(
         if date <= ctx.date:
             continue
         date_prices = date_prices[["instrument", "price"]]
-        value, position = _run1d(
+        value, positions = _run1d(
             strategy, rebalance_period, date, date_prices, ctx, history
         )
-        history = _append_history(history, date, value, position)
-        ctx = _update_ctx(ctx, date, value, position)
+        history = _append_history(history, date, value, positions)
+        ctx = _update_ctx(ctx, date, value, positions)
     return history
 
 
@@ -82,11 +82,11 @@ def _update_ctx(
     ctx: Context,
     date: pd.Timestamp,
     value: float,
-    position: pd.DataFrame,
+    positions: pd.DataFrame,
 ) -> Context:
     ctx.date = date
     ctx.value = value
-    ctx.positions = position
+    ctx.positions = positions
     return ctx
 
 
@@ -108,7 +108,7 @@ def _init_history(prices: pd.DataFrame, history: History | None) -> History:
 
 
 def _append_history(
-    history: History, date: pd.Timestamp, value: float, position: pd.DataFrame
+    history: History, date: pd.Timestamp, value: float, positions: pd.DataFrame
 ) -> History:
     history.values = pd.concat(
         [
@@ -117,10 +117,10 @@ def _append_history(
         ],
         ignore_index=True,
     )
-    if not position.empty:
-        position["date"] = date
+    if not positions.empty:
+        positions["date"] = date
         # 过滤掉空的 history.positions，只保留非空的 DataFrame
-        concat_list = [position]
+        concat_list = [positions]
         if not history.positions.empty:
             concat_list.insert(0, history.positions)
         history.positions = pd.concat(concat_list, ignore_index=True)
