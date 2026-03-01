@@ -161,7 +161,7 @@ def _run1d(
         positions["value"] * positions["price"] / positions["pre_price"]
     )
     # 计算持仓的总价值
-    value = positions["value"].sum()
+    value = positions["value"].sum() if not positions.empty else ctx.value
     # 计算当前持仓的权重
     positions["weight"] = positions["value"] / value if value > 0 else 0
     # 删除临时列
