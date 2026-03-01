@@ -153,25 +153,21 @@ def _run1d(
     ctx: Context,
     history: History,
 ) -> tuple[float, pd.DataFrame]:
-    # 如果当前持仓为空，直接使用初始价值
-    if ctx.positions.empty:
-        value = ctx.value
-    else:
-        # 持仓数据与价格数据合并，计算当前持仓的价值
-        positions = pd.merge(ctx.positions, prices, on="instrument", how="left")
-        positions = positions.rename(columns={"price_x": "pre_price", "price_y": "price"})
-        # 如果价格数据中有缺失值，使用前一天的价格填充
-        positions["price"] = positions["price"].fillna(positions["pre_price"])
-        # 计算当前持仓的价值
-        positions["value"] = (
-            positions["value"] * positions["price"] / positions["pre_price"]
-        )
-        # 计算持仓的总价值
-        value = positions["value"].sum()
-        # 计算当前持仓的权重
-        positions["weight"] = positions["value"] / value if value > 0 else 0
-        # 删除临时列
-        positions = positions.drop(columns=["pre_price"])
+    # 持仓数据与价格数据合并，计算当前持仓的价值
+    positions = pd.merge(ctx.positions, prices, on="instrument", how="left")
+    positions = positions.rename(columns={"price_x": "pre_price", "price_y": "price"})
+    # 如果价格数据中有缺失值，使用前一天的价格填充
+    positions["price"] = positions["price"].fillna(positions["pre_price"])
+    # 计算当前持仓的价值
+    positions["value"] = (
+        positions["value"] * positions["price"] / positions["pre_price"]
+    )
+    # 计算持仓的总价值
+    value = positions["value"].sum()
+    # 计算当前持仓的权重
+    positions["weight"] = positions["value"] / value if value > 0 else 0
+    # 删除临时列
+    positions = positions.drop(columns=["pre_price"])
 
     # 调仓日执行策略函数，更新持仓信息
     if _is_rebalance_date(rebalance_period, date, ctx):
@@ -185,11 +181,5 @@ def _run1d(
         positions["weight"] = positions["weight"] / positions["weight"].sum()
         # 计算新的持仓的价值
         positions["value"] = value * positions["weight"]
-    elif not ctx.positions.empty:
-        # 非调仓日，返回更新后的持仓
-        pass
-    else:
-        # 空持仓且非调仓日，返回空DataFrame
-        positions = pd.DataFrame(columns=["instrument", "value", "weight", "price"])
 
     return value, positions
