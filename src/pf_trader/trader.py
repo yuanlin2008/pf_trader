@@ -119,13 +119,11 @@ def _append_history(
     )
     if not position.empty:
         position["date"] = date
-        history.positions = pd.concat(
-            [
-                history.positions,
-                position,
-            ],
-            ignore_index=True,
-        )
+        # 过滤掉空的 history.positions，只保留非空的 DataFrame
+        concat_list = [position]
+        if not history.positions.empty:
+            concat_list.insert(0, history.positions)
+        history.positions = pd.concat(concat_list, ignore_index=True)
     return history
 
 
