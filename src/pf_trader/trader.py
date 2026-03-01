@@ -59,9 +59,7 @@ def run(
         if date <= ctx.date:
             continue
         date_prices = date_prices[["instrument", "price"]]
-        value, positions = _run1d(
-            strategy, rebalance_period, date, date_prices, ctx, history
-        )
+        value, positions = _run1d(strategy, rebalance_period, date, date_prices, ctx)
         history = _append_history(history, date, value, positions)
         ctx = _update_ctx(ctx, date, value, positions)
     return history
@@ -149,7 +147,6 @@ def _run1d(
     date: pd.Timestamp,
     prices: pd.DataFrame,
     ctx: Context,
-    history: History,
 ) -> tuple[float, pd.DataFrame]:
     # 持仓数据与价格数据合并，计算当前持仓的价值
     positions = pd.merge(ctx.positions, prices, on="instrument", how="left")
@@ -170,7 +167,7 @@ def _run1d(
     # 调仓日执行策略函数，更新持仓信息
     if _is_rebalance_date(rebalance_period, date, ctx):
         # 策略函数返回新的持仓信息，包含 "instrument" 和 "weight" 列
-        positions = strategy(date, history)
+        positions = strategy(date)
         # 将新的持仓信息与价格数据合并
         positions = pd.merge(positions, prices, on="instrument", how="left")
         # 如果价格数据中有缺失值，去除对应的持仓
