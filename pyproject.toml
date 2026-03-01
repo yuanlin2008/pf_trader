@@ -7,3 +7,12 @@ requires-python = ">=3.12"
 dependencies = [
     "pandas>=3.0.1",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
