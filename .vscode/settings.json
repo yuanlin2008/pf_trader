@@ -8,4 +8,7 @@
         "--profile",
         "black"
     ],
+    "[toml]": {
+        "editor.defaultFormatter": "tamasfe.even-better-toml"
+    },
 }
