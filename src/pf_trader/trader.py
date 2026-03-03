@@ -160,7 +160,7 @@ def _settlement(state: State, prices: pd.DataFrame) -> tuple[float, pd.DataFrame
     if state.positions.empty:
         return state.value, state.positions.copy()
     # 原持仓总价值
-    last_pos_value = state.value - state.positions["value"].sum()
+    last_pos_value = state.positions["value"].sum()
     # 持仓数据与价格数据合并，计算当前持仓的价值
     positions = pd.merge(
         state.positions, prices, on="instrument", how="left", suffixes=("_last", "")
