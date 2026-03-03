@@ -137,23 +137,45 @@ def _is_rebalance_date(rebalance_period: str, date: pd.Timestamp, state: State) 
 
 
 def _settlement(state: State, prices: pd.DataFrame) -> tuple[float, pd.DataFrame]:
+    """
+    计算持仓结算后的账户价值和调整后的持仓信息
+
+    Args:
+        state (State): 包含当前账户状态的对象，需包含value和positions属性
+        prices (pd.DataFrame): 包含各标的当前价格的数据框，需包含instrument列和price列
+
+    Returns:
+        tuple[float, pd.DataFrame]: 包含两个元素的元组：
+            - 结算后的总账户价值
+            - 调整后的持仓数据框（包含value和weight列）
+
+    Note:
+        - 当positions为空时直接返回原账户价值和持仓副本
+        - 处理逻辑：
+            1. 计算原持仓总价值
+            2. 合并持仓与价格数据
+            3. 处理价格缺失值（使用前一日价格填充）
+            4. 重新计算持仓价值和权重
+    """
     if state.positions.empty:
         return state.value, state.positions.copy()
     # 原持仓总价值
     last_pos_value = state.value - state.positions["value"].sum()
     # 持仓数据与价格数据合并，计算当前持仓的价值
-    positions = pd.merge(state.positions, prices, on="instrument", how="left")
-    positions = positions.rename(columns={"price_x": "pre_price", "price_y": "price"})
+    positions = pd.merge(
+        state.positions, prices, on="instrument", how="left", suffixes=("_last", "")
+    )
     # 如果价格数据中有缺失值，使用前一天的价格填充
-    positions["price"] = positions["price"].fillna(positions["pre_price"])
+    positions["price"] = positions["price"].fillna(positions["price_last"])
     # 计算当前持仓的价值
     positions["value"] = (
-        positions["value"] * positions["price"] / positions["pre_price"]
+        positions["value"] * positions["price"] / positions["price_last"]
     )
     # 删除临时列
-    positions = positions.drop(columns=["pre_price"])
+    positions = positions.drop(columns=["price_last"])
     # 计算持仓的总价值
     new_pos_value = positions["value"].sum()
+    positions["weight"] = positions["value"] / new_pos_value
     return state.value + (new_pos_value - last_pos_value), positions
 
 
@@ -165,6 +187,25 @@ def _trade(
     sell_cost: float,
     slip_cost: float,
 ) -> pd.DataFrame:
+    """
+    计算并返回调仓交易详情及交易成本
+
+    Args:
+        value (float): 投资组合总价值
+        positions (pd.DataFrame): 当前持仓数据，包含'instrument'和'weight'列
+        new_positions (pd.DataFrame): 目标持仓数据，包含'instrument'和'weight'列
+        buy_cost (float): 买入交易成本率
+        sell_cost (float): 卖出交易成本率
+        slip_cost (float): 滑点成本率
+
+    Returns:
+        pd.DataFrame: 包含以下列的调仓交易详情:
+            - instrument: 交易标的
+            - weight_from: 原持仓权重
+            - weight_to: 目标持仓权重
+            - cost: 交易成本
+    """
+    # 计算调仓交易详情
     trades = pd.merge(
         positions[["instrument", "weight"]],
         new_positions[["instrument", "weight"]],
@@ -172,7 +213,10 @@ def _trade(
         how="outer",
         suffixes=("_from", "_to"),
     ).fillna(0)
-    trades = trades[trades["weight_from"] != trades["weight_to"]]
+    # 如果权重变化小于阈值，则视为无变化
+    weight_diff = np.abs(trades["weight_to"] - trades["weight_from"])
+    trades = trades[weight_diff > 1e-9]
+    # 计算交易成本
     trades["cost"] = np.where(
         trades["weight_to"] > trades["weight_from"],
         (trades["weight_to"] - trades["weight_from"]) * value * (buy_cost + slip_cost),
@@ -192,6 +236,25 @@ def _run1d(
     state: State,
 ) -> tuple[float, pd.DataFrame, pd.DataFrame]:
     # 结算当前总价值
+    """
+    执行一维资产组合的再平衡操作，包括结算、策略执行和交易成本计算
+
+    Args:
+        strategy (Callable): 策略函数，接收Context对象并返回新的持仓信息
+        rebalance_period (str): 再平衡周期标识
+        buy_cost (float): 买入交易成本率
+        sell_cost (float): 卖出交易成本率
+        slip_cost (float): 滑点成本率
+        date (pd.Timestamp): 当前日期
+        prices (pd.DataFrame): 资产价格数据
+        state (State): 当前组合状态对象
+
+    Returns:
+        tuple[float, pd.DataFrame, pd.DataFrame]: 包含三个元素的元组：
+            - 当前组合总价值
+            - 新的持仓信息DataFrame
+            - 交易记录DataFrame(包含instrument、weight_from、weight_to和cost列)
+    """
     value, positions = _settlement(state, prices)
 
     # 策略函数返回新的持仓信息，包含 "instrument" 和 "weight" 列
