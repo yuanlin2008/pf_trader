@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Callable
+from typing import Protocol, runtime_checkable
 
 import numpy as np
 import pandas as pd
@@ -54,8 +54,19 @@ class Context:
     positions: pd.DataFrame
 
 
+@runtime_checkable
+class Strategy(Protocol):
+    """策略函数协议
+
+    策略函数接收 Context 对象，返回新的持仓信息。
+    如果返回 None，则保持当前持仓不变。
+    如果返回 DataFrame，必须包含 "instrument" 和 "weight" 列。
+    """
+    def __call__(self, context: Context) -> pd.DataFrame | None: ...
+
+
 def run(
-    strategy: Callable,
+    strategy: Strategy,
     rebalance_period: str,
     buy_cost: float,
     sell_cost: float,
@@ -226,7 +237,7 @@ def _trade(
 
 
 def _run1d(
-    strategy: Callable,
+    strategy: Strategy,
     rebalance_period: str,
     buy_cost: float,
     sell_cost: float,
