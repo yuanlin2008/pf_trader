@@ -65,6 +65,7 @@ class Strategy(Protocol):
         - list: 列表元素为 (instrument, weight) 元组
         - dict: 键为 instrument，值为 weight
     """
+
     def __call__(
         self, context: Context
     ) -> pd.DataFrame | list[tuple[str, float]] | dict[str, float] | None: ...
@@ -73,11 +74,11 @@ class Strategy(Protocol):
 def run(
     strategy: Strategy,
     rebalance_period: str,
-    buy_cost: float,
-    sell_cost: float,
-    slip_cost: float,
     prices: pd.DataFrame,
     state: State | None = None,
+    buy_cost: float = 0.0,
+    sell_cost: float = 0.0,
+    slip_cost: float = 0.0,
 ) -> History:
     """
     执行策略
@@ -85,11 +86,11 @@ def run(
         Args:
         strategy: 交易策略函数，接受 Context 和 History 参数
         rebalance_period: 调仓周期，支持 "w"（周）、"m"（月）、"q"（季度）和 "y"（年）
+        prices: 包含日期和价格数据的 DataFrame，列名为 "date", "instrument", "price"
+        state: 策略执行的状态信息，默认为 None:
         buy_cost: 买入成本率
         sell_cost: 卖出成本率
         slip_cost: 滑点成本率
-        prices: 包含日期和价格数据的 DataFrame，列名为 "date", "instrument", "price"
-        state: 策略执行的状态信息，默认为 None:
     Returns:
         History: 包含完整执行历史的数据对象
 
