@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from pf_trader import trader
+from pf_trader import pf_trader as trader
 
 
 class TestDataClasses:
