@@ -36,29 +36,11 @@ class State:
     positions: pd.DataFrame
 
 
-@dataclass(frozen=True)
-class Context:
-    """
-    策略执行的上下文信息
-
-     Attributes:
-        date: 当前日期
-        is_rebalance_date: 是否为调仓日
-        value: 当前策略总价值
-        positions: 当前持仓信息，包含 "instrument", "value", "weight" 和 "price" 列
-    """
-
-    date: pd.Timestamp
-    is_rebalance_date: bool
-    value: float
-    positions: pd.DataFrame
-
-
 @runtime_checkable
 class Strategy(Protocol):
     """策略函数协议
 
-    策略函数接收 Context 对象，返回新的持仓信息。
+    策略函数接收 State 对象，返回新的持仓信息。
     如果返回 None，则保持当前持仓不变。
     支持以下返回类型：
         - DataFrame: 必须包含 "instrument" 和 "weight" 列
@@ -67,13 +49,12 @@ class Strategy(Protocol):
     """
 
     def __call__(
-        self, context: Context
+        self, state: State
     ) -> pd.DataFrame | list[tuple[str, float]] | dict[str, float] | None: ...
 
 
 def run(
     strategy: Strategy,
-    rebalance_period: str,
     prices: pd.DataFrame,
     state: State | None = None,
     buy_cost: float = 0.0,
@@ -84,8 +65,7 @@ def run(
     执行策略
 
         Args:
-        strategy: 交易策略函数，接受 Context 和 History 参数
-        rebalance_period: 调仓周期，支持 "w"（周）、"m"（月）、"q"（季度）和 "y"（年）
+        strategy: 交易策略函数，接受 State 参数
         prices: 包含日期和价格数据的 DataFrame，列名为 "date", "instrument", "price"
         state: 策略执行的状态信息，默认为 None:
         buy_cost: 买入成本率
@@ -113,7 +93,6 @@ def run(
         date_prices = date_prices[["instrument", "price"]]
         v, p, t = _run1d(
             strategy,
-            rebalance_period,
             buy_cost,
             sell_cost,
             slip_cost,
@@ -135,22 +114,6 @@ def run(
         positions=pd.concat(positions, ignore_index=True),
         trades=pd.concat(trades, ignore_index=True),
     )
-
-
-def _is_rebalance_date(rebalance_period: str, date: pd.Timestamp, state: State) -> bool:
-    """
-    检测是否为调仓日.
-    """
-    if rebalance_period == "d":
-        return True
-    elif rebalance_period == "w":
-        return state.date.isocalendar()[:2] != date.isocalendar()[:2]
-    elif rebalance_period == "m":
-        return state.date.month != date.month
-    elif rebalance_period == "q":
-        return state.date.quarter != date.quarter
-    else:
-        return state.date.year != date.year
 
 
 def _settlement(state: State, prices: pd.DataFrame) -> tuple[float, pd.DataFrame]:
@@ -244,7 +207,6 @@ def _trade(
 
 def _run1d(
     strategy: Strategy,
-    rebalance_period: str,
     buy_cost: float,
     sell_cost: float,
     slip_cost: float,
@@ -257,8 +219,7 @@ def _run1d(
     执行一维资产组合的再平衡操作，包括结算、策略执行和交易成本计算
 
     Args:
-        strategy (Callable): 策略函数，接收Context对象并返回新的持仓信息
-        rebalance_period (str): 再平衡周期标识
+        strategy (Strategy): 策略函数，接收State对象并返回新的持仓信息
         buy_cost (float): 买入交易成本率
         sell_cost (float): 卖出交易成本率
         slip_cost (float): 滑点成本率
@@ -276,9 +237,8 @@ def _run1d(
 
     # 策略函数返回新的持仓信息，支持 DataFrame / list / dict
     new_positions = strategy(
-        Context(
+        State(
             date=date,
-            is_rebalance_date=_is_rebalance_date(rebalance_period, date, state),
             value=value,
             positions=positions.copy(),
         )
