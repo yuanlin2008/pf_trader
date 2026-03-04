@@ -1,8 +1,12 @@
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Protocol, TypeAlias, runtime_checkable
 
 import numpy as np
 import pandas as pd
+
+StrategyResult: TypeAlias = (
+    pd.DataFrame | list[tuple[str, float]] | dict[str, float] | None
+)
 
 
 @dataclass
@@ -48,9 +52,7 @@ class Strategy(Protocol):
         - dict: 键为 instrument，值为 weight
     """
 
-    def __call__(
-        self, state: State
-    ) -> pd.DataFrame | list[tuple[str, float]] | dict[str, float] | None: ...
+    def __call__(self, state: State) -> StrategyResult: ...
 
 
 def run(
