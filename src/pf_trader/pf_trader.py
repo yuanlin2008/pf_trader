@@ -60,9 +60,14 @@ class Strategy(Protocol):
 
     策略函数接收 Context 对象，返回新的持仓信息。
     如果返回 None，则保持当前持仓不变。
-    如果返回 DataFrame，必须包含 "instrument" 和 "weight" 列。
+    支持以下返回类型：
+        - DataFrame: 必须包含 "instrument" 和 "weight" 列
+        - list: 列表元素为 (instrument, weight) 元组
+        - dict: 键为 instrument，值为 weight
     """
-    def __call__(self, context: Context) -> pd.DataFrame | None: ...
+    def __call__(
+        self, context: Context
+    ) -> pd.DataFrame | list[tuple[str, float]] | dict[str, float] | None: ...
 
 
 def run(
@@ -268,7 +273,7 @@ def _run1d(
     """
     value, positions = _settlement(state, prices)
 
-    # 策略函数返回新的持仓信息，包含 "instrument" 和 "weight" 列
+    # 策略函数返回新的持仓信息，支持 DataFrame / list / dict
     new_positions = strategy(
         Context(
             date=date,
@@ -277,6 +282,8 @@ def _run1d(
             positions=positions.copy(),
         )
     )
+
+    # 将各种格式统一转换为 DataFrame
     if new_positions is None:
         # 如果策略函数返回 None，则保持当前持仓不变
         return (
@@ -284,27 +291,34 @@ def _run1d(
             positions,
             pd.DataFrame(columns=["instrument", "weight_from", "weight_to", "cost"]),
         )
-    else:
-        # 仓位有变化
-        total_weight = new_positions["weight"].sum()
-        if total_weight > 1:
-            total_weight = 1
-        # 将新的持仓信息与价格数据合并
-        new_positions = pd.merge(new_positions, prices, on="instrument", how="left")
-        # 如果价格数据中有缺失值，去除对应的持仓
-        new_positions = new_positions.dropna()
-        # 重新计算持仓权重
-        new_positions["weight"] = new_positions["weight"] / total_weight
-        # 计算交易成本，更新总价值
-        trades = _trade(
-            value=value,
-            positions=positions,
-            new_positions=new_positions,
-            buy_cost=buy_cost,
-            sell_cost=sell_cost,
-            slip_cost=slip_cost,
+    elif isinstance(new_positions, list):
+        # list[(instrument, weight)] -> DataFrame
+        new_positions = pd.DataFrame(new_positions, columns=["instrument", "weight"])
+    elif isinstance(new_positions, dict):
+        # dict[instrument, weight] -> DataFrame
+        new_positions = pd.DataFrame(
+            list(new_positions.items()), columns=["instrument", "weight"]
         )
-        value -= trades["cost"].sum()
-        # 计算新的持仓的价值
-        new_positions["value"] = value * new_positions["weight"]
-        return value, new_positions, trades
+    # 此时 new_positions 必然是 DataFrame
+    total_weight = new_positions["weight"].sum()
+    if total_weight > 1:
+        total_weight = 1
+    # 将新的持仓信息与价格数据合并
+    new_positions = pd.merge(new_positions, prices, on="instrument", how="left")
+    # 如果价格数据中有缺失值，去除对应的持仓
+    new_positions = new_positions.dropna()
+    # 重新计算持仓权重
+    new_positions["weight"] = new_positions["weight"] / total_weight
+    # 计算交易成本，更新总价值
+    trades = _trade(
+        value=value,
+        positions=positions,
+        new_positions=new_positions,
+        buy_cost=buy_cost,
+        sell_cost=sell_cost,
+        slip_cost=slip_cost,
+    )
+    value -= trades["cost"].sum()
+    # 计算新的持仓的价值
+    new_positions["value"] = value * new_positions["weight"]
+    return value, new_positions, trades
