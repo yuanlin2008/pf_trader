@@ -15,12 +15,12 @@ class History:
     策略执行的历史数据
 
     Attributes:
-        values: 包含日期和策略总价值的 DataFrame，列名为 "date" 和 "value"
+        daily: 每日结算的DataFrame，列名为 "date", "value", 'rebalance"
         positions: 包含日期、持仓信息和权重的 DataFrame，列名为 "date","instrument","value","weight","price"
         trades: 包含日期、交易信息和交易成本的 DataFrame，列名为 "date","instrument","weight_from","weight_to","cost"
     """
 
-    values: pd.DataFrame
+    daily: pd.DataFrame
     positions: pd.DataFrame
     trades: pd.DataFrame
 
@@ -31,11 +31,13 @@ class State:
     策略执行的状态信息
      Attributes:
         date: 当前日期
+        last_rebalance: 上次调仓日期
         value: 当前策略总价值
         positions: 当前持仓信息，包含 "instrument", "value", "weight" 和 "price" 列
     """
 
     date: pd.Timestamp
+    last_rebalance: pd.Timestamp | None
     value: float
     positions: pd.DataFrame
 
@@ -80,20 +82,22 @@ def run(
     if state is None:
         state = State(
             date=prices["date"].min(),
+            last_rebalance=None,
             value=1.0,
             positions=pd.DataFrame(columns=["instrument", "value", "weight", "price"]),
         )
 
-    values = []
+    daily = []
     positions = []
     trades = []
+    last_rebalance = state.last_rebalance
 
     for date, date_prices in prices.groupby("date"):
         date = pd.Timestamp(str(date))
         if date <= state.date:
             continue
         date_prices = date_prices[["instrument", "price"]]
-        v, p, t = _run1d(
+        v, r, p, t = _run1d(
             strategy,
             buy_cost,
             sell_cost,
@@ -102,17 +106,20 @@ def run(
             date_prices,
             state,
         )
-        state = State(date=date, value=v, positions=p.copy())
+        if r:
+            last_rebalance = date
+        state = State(
+            date=date, last_rebalance=last_rebalance, value=v, positions=p.copy()
+        )
 
-        values.append((date, v))
-
+        daily.append((date, v, r))
         p.insert(0, "date", date)
         positions.append(p)
         t.insert(0, "date", date)
         trades.append(t)
 
     return History(
-        values=pd.DataFrame(values, columns=["date", "value"]),
+        daily=pd.DataFrame(daily, columns=["date", "value", "rebalance"]),
         positions=pd.concat(positions, ignore_index=True),
         trades=pd.concat(trades, ignore_index=True),
     )
@@ -215,7 +222,7 @@ def _run1d(
     date: pd.Timestamp,
     prices: pd.DataFrame,
     state: State,
-) -> tuple[float, pd.DataFrame, pd.DataFrame]:
+) -> tuple[float, bool, pd.DataFrame, pd.DataFrame]:
     # 结算当前总价值
     """
     执行一维资产组合的再平衡操作，包括结算、策略执行和交易成本计算
@@ -241,6 +248,7 @@ def _run1d(
     new_positions = strategy(
         State(
             date=date,
+            last_rebalance=state.last_rebalance,
             value=value,
             positions=positions.copy(),
         )
@@ -251,6 +259,7 @@ def _run1d(
         # 如果策略函数返回 None，则保持当前持仓不变
         return (
             value,
+            False,
             positions,
             pd.DataFrame(columns=["instrument", "weight_from", "weight_to", "cost"]),
         )
@@ -284,4 +293,4 @@ def _run1d(
     value -= trades["cost"].sum()
     # 计算新的持仓的价值
     new_positions["value"] = value * new_positions["weight"]
-    return value, new_positions, trades
+    return value, True, new_positions, trades
