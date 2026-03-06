@@ -1,8 +1,16 @@
 from dataclasses import dataclass
-from typing import Protocol, TypeAlias, runtime_checkable
+from typing import Protocol, TYPE_CHECKING, TypeAlias, runtime_checkable
 
 import numpy as np
 import pandas as pd
+
+if TYPE_CHECKING:
+    try:
+        from tqdm import tqdm as TqdmType
+    except ImportError:
+        TqdmType = type(None)
+else:
+    TqdmType = type(None)
 
 StrategyResult: TypeAlias = (
     pd.DataFrame | list[tuple[str, float]] | dict[str, float] | None
@@ -64,6 +72,7 @@ def run(
     buy_cost: float = 0.0,
     sell_cost: float = 0.0,
     slip_cost: float = 0.0,
+    show_progress: bool = False,
 ) -> History:
     """
     执行策略
@@ -75,6 +84,7 @@ def run(
         buy_cost: 买入成本率
         sell_cost: 卖出成本率
         slip_cost: 滑点成本率
+        show_progress: 是否显示进度条，需要安装 tqdm
     Returns:
         History: 包含完整执行历史的数据对象
 
@@ -92,7 +102,16 @@ def run(
     trades = []
     last_rebalance = state.last_rebalance
 
-    for date, date_prices in prices.groupby("date"):
+    date_groups = list(prices.groupby("date"))
+    if show_progress:
+        try:
+            from tqdm import tqdm
+
+            date_groups = tqdm(date_groups, desc="Running strategy")
+        except ImportError:
+            show_progress = False
+
+    for date, date_prices in date_groups:
         date = pd.Timestamp(str(date))
         if date <= state.date:
             continue
