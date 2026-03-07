@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Protocol, TYPE_CHECKING, TypeAlias, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, TypeAlias, runtime_checkable
 
 import numpy as np
 import pandas as pd
@@ -102,6 +102,7 @@ def run(
     trades = []
     last_rebalance = state.last_rebalance
 
+    prices = prices.sort_values("date")
     date_groups = list(prices.groupby("date"))
     if show_progress:
         try:
@@ -111,10 +112,13 @@ def run(
         except ImportError:
             show_progress = False
 
+    # 遍历日期分组
     for date, date_prices in date_groups:
         date = pd.Timestamp(str(date))
         if date <= state.date:
+            # 跳过已执行过的日期
             continue
+
         date_prices = date_prices[["instrument", "price"]]
         v, r, p, t = _run1d(
             strategy,
@@ -137,11 +141,24 @@ def run(
         t.insert(0, "date", date)
         trades.append(t)
 
-    return History(
-        daily=pd.DataFrame(daily, columns=["date", "value", "rebalance"]),
-        positions=pd.concat(positions, ignore_index=True),
-        trades=pd.concat(trades, ignore_index=True),
-    )
+    if len(daily) == 0:
+        # 没有执行过任何交易，返回空的历史数据
+        return History(
+            daily=pd.DataFrame(columns=["date", "value", "rebalance"]),
+            positions=pd.DataFrame(
+                columns=["date", "instrument", "value", "weight", "price"]
+            ),
+            trades=pd.DataFrame(
+                columns=["date", "instrument", "weight_from", "weight_to", "cost"]
+            ),
+        )
+    else:
+        # 返回完整的历史数据
+        return History(
+            daily=pd.DataFrame(daily, columns=["date", "value", "rebalance"]),
+            positions=pd.concat(positions, ignore_index=True),
+            trades=pd.concat(trades, ignore_index=True),
+        )
 
 
 def _settlement(state: State, prices: pd.DataFrame) -> tuple[float, pd.DataFrame]:
