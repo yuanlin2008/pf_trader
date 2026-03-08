@@ -23,13 +23,19 @@ class History:
     策略执行的历史数据
 
     Attributes:
-        daily: 每日结算的DataFrame，列名为 "date", "value", 'rebalance"
-        positions: 包含日期、持仓信息和权重的 DataFrame，列名为 "date","instrument","value","weight","price"
-        trades: 包含日期、交易信息和交易成本的 DataFrame，列名为 "date","instrument","weight_from","weight_to","cost"
+        daily:  每日状态数据，
+                列名为 "date", "value", "rebalance"
+        positions:  每日持仓状态数据，
+                    列名为 "date","instrument","value","weight","price"
+        settlements: 每日结算数据，
+                     列名为 "date","instrument","last_value","value", 'pct_change', 'value_change'
+        trades: 每日成交数据，
+                列名为 "date","instrument","weight_from","weight_to","cost"
     """
 
     daily: pd.DataFrame
     positions: pd.DataFrame
+    settlements: pd.DataFrame
     trades: pd.DataFrame
 
 
@@ -99,6 +105,7 @@ def run(
 
     daily = []
     positions = []
+    settlements = []
     trades = []
     last_rebalance = state.last_rebalance
 
@@ -120,7 +127,7 @@ def run(
             continue
 
         date_prices = date_prices[["instrument", "price"]]
-        v, r, p, t = _run1d(
+        v, p, s, t = _run1d(
             strategy,
             buy_cost,
             sell_cost,
@@ -129,17 +136,20 @@ def run(
             date_prices,
             state,
         )
-        if r:
+        if t is not None:
             last_rebalance = date
         state = State(
             date=date, last_rebalance=last_rebalance, value=v, positions=p.copy()
         )
 
-        daily.append((date, v, r))
+        daily.append((date, v, t is not None))
         p.insert(0, "date", date)
         positions.append(p)
-        t.insert(0, "date", date)
-        trades.append(t)
+        s.insert(0, "date", date)
+        settlements.append(s)
+        if t is not None:
+            t.insert(0, "date", date)
+            trades.append(t)
 
     if len(daily) == 0:
         # 没有执行过任何交易，返回空的历史数据
@@ -147,6 +157,16 @@ def run(
             daily=pd.DataFrame(columns=["date", "value", "rebalance"]),
             positions=pd.DataFrame(
                 columns=["date", "instrument", "value", "weight", "price"]
+            ),
+            settlements=pd.DataFrame(
+                columns=[
+                    "date",
+                    "instrument",
+                    "last_value",
+                    "value",
+                    "pct_change",
+                    "value_change",
+                ]
             ),
             trades=pd.DataFrame(
                 columns=["date", "instrument", "weight_from", "weight_to", "cost"]
@@ -157,11 +177,14 @@ def run(
         return History(
             daily=pd.DataFrame(daily, columns=["date", "value", "rebalance"]),
             positions=pd.concat(positions, ignore_index=True),
+            settlements=pd.concat(settlements, ignore_index=True),
             trades=pd.concat(trades, ignore_index=True),
         )
 
 
-def _settlement(state: State, prices: pd.DataFrame) -> tuple[float, pd.DataFrame]:
+def _settlement(
+    state: State, prices: pd.DataFrame
+) -> tuple[float, pd.DataFrame, pd.DataFrame]:
     """
     计算持仓结算后的账户价值和调整后的持仓信息
 
@@ -170,9 +193,10 @@ def _settlement(state: State, prices: pd.DataFrame) -> tuple[float, pd.DataFrame
         prices (pd.DataFrame): 包含各标的当前价格的数据框，需包含instrument列和price列
 
     Returns:
-        tuple[float, pd.DataFrame]: 包含两个元素的元组：
+        tuple[float, pd.DataFrame, pd.DataFrame]: 包含三个元素的元组：
             - 结算后的总账户价值
             - 调整后的持仓数据框（包含value和weight列）
+            - 结算记录数据框
 
     Note:
         - 当positions为空时直接返回原账户价值和持仓副本
@@ -183,9 +207,19 @@ def _settlement(state: State, prices: pd.DataFrame) -> tuple[float, pd.DataFrame
             4. 重新计算持仓价值和权重
     """
     if state.positions.empty:
-        return state.value, state.positions.copy()
-    # 原持仓总价值
-    last_pos_value = state.positions["value"].sum()
+        return (
+            state.value,
+            pd.DataFrame(columns=["instrument", "value", "weight", "price"]),
+            pd.DataFrame(
+                columns=[
+                    "instrument",
+                    "last_value",
+                    "value",
+                    "pct_change",
+                    "value_change",
+                ]
+            ),
+        )
     # 持仓数据与价格数据合并，计算当前持仓的价值
     positions = pd.merge(
         state.positions, prices, on="instrument", how="left", suffixes=("_last", "")
@@ -193,15 +227,24 @@ def _settlement(state: State, prices: pd.DataFrame) -> tuple[float, pd.DataFrame
     # 如果价格数据中有缺失值，使用前一天的价格填充
     positions["price"] = positions["price"].fillna(positions["price_last"])
     # 计算当前持仓的价值
+    positions.rename(columns={"value": "last_value"}, inplace=True)
     positions["value"] = (
-        positions["value"] * positions["price"] / positions["price_last"]
+        positions["last_value"] * positions["price"] / positions["price_last"]
     )
-    # 删除临时列
-    positions = positions.drop(columns=["price_last"])
     # 计算持仓的总价值
+    last_pos_value = positions["last_value"].sum()
     new_pos_value = positions["value"].sum()
     positions["weight"] = positions["value"] / new_pos_value
-    return state.value + (new_pos_value - last_pos_value), positions
+
+    # 计算结算记录
+    settlement = positions[["instrument", "last_value", "value"]].copy()
+    settlement["pct_change"] = settlement["value"] / settlement["last_value"] - 1
+    settlement["value_change"] = settlement["value"] - settlement["last_value"]
+
+    # 删除临时列
+    positions = positions.drop(columns=["price_last", "last_value"])
+
+    return state.value + (new_pos_value - last_pos_value), positions, settlement
 
 
 def _trade(
@@ -258,7 +301,7 @@ def _run1d(
     date: pd.Timestamp,
     prices: pd.DataFrame,
     state: State,
-) -> tuple[float, bool, pd.DataFrame, pd.DataFrame]:
+) -> tuple[float, pd.DataFrame, pd.DataFrame, pd.DataFrame | None]:
     # 结算当前总价值
     """
     执行一维资产组合的再平衡操作，包括结算、策略执行和交易成本计算
@@ -273,12 +316,13 @@ def _run1d(
         state (State): 当前组合状态对象
 
     Returns:
-        tuple[float, pd.DataFrame, pd.DataFrame]: 包含三个元素的元组：
+        tuple[float, pd.DataFrame, pd.DataFrame, pd.DataFrame|None]: 包含四个元素的元组：
             - 当前组合总价值
             - 新的持仓信息DataFrame
-            - 交易记录DataFrame(包含instrument、weight_from、weight_to和cost列)
+            - 结算记录DataFrame
+            - 交易记录DataFrame
     """
-    value, positions = _settlement(state, prices)
+    value, positions, settlement = _settlement(state, prices)
 
     # 策略函数返回新的持仓信息，支持 DataFrame / list / dict
     new_positions = strategy(
@@ -293,12 +337,7 @@ def _run1d(
     # 将各种格式统一转换为 DataFrame
     if new_positions is None:
         # 如果策略函数返回 None，则保持当前持仓不变
-        return (
-            value,
-            False,
-            positions,
-            pd.DataFrame(columns=["instrument", "weight_from", "weight_to", "cost"]),
-        )
+        return (value, positions, settlement, None)
     elif isinstance(new_positions, list):
         # list[(instrument, weight)] -> DataFrame
         new_positions = pd.DataFrame(new_positions, columns=["instrument", "weight"])
@@ -329,4 +368,4 @@ def _run1d(
     value -= trades["cost"].sum()
     # 计算新的持仓的价值
     new_positions["value"] = value * new_positions["weight"]
-    return value, True, new_positions, trades
+    return value, new_positions, settlement, trades
