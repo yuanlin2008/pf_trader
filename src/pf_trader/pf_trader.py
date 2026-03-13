@@ -71,6 +71,12 @@ class Strategy(Protocol):
     def __call__(self, state: State) -> StrategyResult: ...
 
 
+C_Daily = ["value", "rebalance"]
+C_Positions = ["instrument", "value", "weight", "price"]
+C_Settlements = ["instrument", "last_value", "value", "pct_change", "value_change"]
+C_Trades = ["instrument", "weight_from", "weight_to", "cost"]
+
+
 def run(
     strategy: Strategy,
     prices: pd.DataFrame,
@@ -100,7 +106,7 @@ def run(
             date=prices["date"].min(),
             last_rebalance=None,
             value=1.0,
-            positions=pd.DataFrame(columns=["instrument", "value", "weight", "price"]),
+            positions=pd.DataFrame(columns=C_Positions),
         )
 
     daily = []
@@ -151,35 +157,28 @@ def run(
             t.insert(0, "date", date)
             trades.append(t)
 
-    if len(daily) == 0:
-        # 没有执行过任何交易，返回空的历史数据
-        return History(
-            daily=pd.DataFrame(columns=["date", "value", "rebalance"]),
-            positions=pd.DataFrame(
-                columns=["date", "instrument", "value", "weight", "price"]
-            ),
-            settlements=pd.DataFrame(
-                columns=[
-                    "date",
-                    "instrument",
-                    "last_value",
-                    "value",
-                    "pct_change",
-                    "value_change",
-                ]
-            ),
-            trades=pd.DataFrame(
-                columns=["date", "instrument", "weight_from", "weight_to", "cost"]
-            ),
-        )
-    else:
-        # 返回完整的历史数据
-        return History(
-            daily=pd.DataFrame(daily, columns=["date", "value", "rebalance"]),
-            positions=pd.concat(positions, ignore_index=True),
-            settlements=pd.concat(settlements, ignore_index=True),
-            trades=pd.concat(trades, ignore_index=True),
-        )
+    return History(
+        daily=(
+            pd.DataFrame(daily, columns=["date", *C_Daily])
+            if len(daily) > 0
+            else pd.DataFrame(columns=["date", *C_Daily])
+        ),
+        positions=(
+            pd.concat(positions, ignore_index=True)
+            if len(positions) > 0
+            else pd.DataFrame(columns=["date", *C_Positions])
+        ),
+        settlements=(
+            pd.concat(settlements, ignore_index=True)
+            if len(settlements) > 0
+            else pd.DataFrame(columns=["date", *C_Settlements])
+        ),
+        trades=(
+            pd.concat(trades, ignore_index=True)
+            if len(trades) > 0
+            else pd.DataFrame(columns=["date", *C_Trades])
+        ),
+    )
 
 
 def _settlement(
@@ -209,16 +208,8 @@ def _settlement(
     if state.positions.empty:
         return (
             state.value,
-            pd.DataFrame(columns=["instrument", "value", "weight", "price"]),
-            pd.DataFrame(
-                columns=[
-                    "instrument",
-                    "last_value",
-                    "value",
-                    "pct_change",
-                    "value_change",
-                ]
-            ),
+            pd.DataFrame(columns=C_Positions),
+            pd.DataFrame(columns=C_Settlements),
         )
     # 持仓数据与价格数据合并，计算当前持仓的价值
     positions = pd.merge(
