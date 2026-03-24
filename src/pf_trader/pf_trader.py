@@ -1,20 +1,14 @@
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, TypeAlias, runtime_checkable
+from typing import Callable, TypeAlias
 
 import numpy as np
 import pandas as pd
 
-if TYPE_CHECKING:
-    try:
-        from tqdm import tqdm as TqdmType
-    except ImportError:
-        TqdmType = type(None)
-else:
-    TqdmType = type(None)
-
-StrategyResult: TypeAlias = (
-    pd.DataFrame | list[tuple[str, float]] | dict[str, float] | None
-)
+C_Prices = ["instrument", "price"]
+C_Daily = ["value", "rebalance"]
+C_Positions = ["instrument", "value", "weight", "price"]
+C_Settlements = ["instrument", "last_value", "value", "pct_change", "value_change"]
+C_Trades = ["instrument", "weight_from", "weight_to", "cost"]
 
 
 @dataclass
@@ -23,14 +17,10 @@ class History:
     策略执行的历史数据
 
     Attributes:
-        daily:  每日状态数据，
-                列名为 "date", "value", "rebalance"
-        positions:  每日持仓状态数据，
-                    列名为 "date","instrument","value","weight","price"
-        settlements: 每日结算数据，
-                     列名为 "date","instrument","last_value","value", 'pct_change', 'value_change'
-        trades: 每日成交数据，
-                列名为 "date","instrument","weight_from","weight_to","cost"
+        daily:  每日状态数据， 列名为 "date" + C_Daily
+        positions:  每日持仓状态数据， 列名为 "date" + C_Positions
+        settlements: 每日结算数据， 列名为 "date" + C_Settlements
+        trades: 每日成交数据， 列名为 "date" + C_Trades
     """
 
     daily: pd.DataFrame
@@ -47,7 +37,7 @@ class State:
         date: 当前日期
         last_rebalance: 上次调仓日期
         value: 当前策略总价值
-        positions: 当前持仓信息，包含 "instrument", "value", "weight" 和 "price" 列
+        positions: 当前持仓信息，列名为 C_Positions
     """
 
     date: pd.Timestamp
@@ -56,52 +46,56 @@ class State:
     positions: pd.DataFrame
 
 
-@runtime_checkable
-class Strategy(Protocol):
-    """策略函数协议
+# 策略执行结果类型
+# None: 不进行调仓操作
+# pd.DataFrame: 调仓操作，列名为 instrument, weight
+# list[tuple[str, float]]: 调仓操作
+# dict[str, float]: 调仓操作
+StrategyResult: TypeAlias = (
+    pd.DataFrame | list[tuple[str, float]] | dict[str, float] | None
+)
 
-    策略函数接收 State 对象，返回新的持仓信息。
-    如果返回 None，则保持当前持仓不变。
-    支持以下返回类型：
-        - DataFrame: 必须包含 "instrument" 和 "weight" 列
-        - list: 列表元素为 (instrument, weight) 元组
-        - dict: 键为 instrument，值为 weight
+# 策略函数类型
+# State: 策略执行的状态信息
+# StrategyResult: 策略执行的结果
+Strategy: TypeAlias = Callable[[State], StrategyResult]
+
+
+@dataclass(frozen=True)
+class TraderSetting:
+    """
+    交易设置
+    Attributes:
+        buy_cost: 买入成本，默认为 0.0
+        sell_cost: 卖出成本，默认为 0.0
+        slip_cost: 滑点成本，默认为 0.0
     """
 
-    def __call__(self, state: State) -> StrategyResult: ...
-
-
-C_Daily = ["value", "rebalance"]
-C_Positions = ["instrument", "value", "weight", "price"]
-C_Settlements = ["instrument", "last_value", "value", "pct_change", "value_change"]
-C_Trades = ["instrument", "weight_from", "weight_to", "cost"]
+    buy_cost: float = 0.0
+    sell_cost: float = 0.0
+    slip_cost: float = 0.0
 
 
 def run(
     strategy: Strategy,
     prices: pd.DataFrame,
     state: State | None = None,
-    buy_cost: float = 0.0,
-    sell_cost: float = 0.0,
-    slip_cost: float = 0.0,
-    show_progress: bool = False,
+    setting: TraderSetting = TraderSetting(),
 ) -> History:
     """
     执行策略
 
         Args:
         strategy: 交易策略函数，接受 State 参数
-        prices: 包含日期和价格数据的 DataFrame，列名为 "date", "instrument", "price"
+        prices: 包含日期和价格数据的 DataFrame，列名为 "date" + C_Prices
         state: 策略执行的状态信息，默认为 None:
-        buy_cost: 买入成本率
-        sell_cost: 卖出成本率
-        slip_cost: 滑点成本率
-        show_progress: 是否显示进度条，需要安装 tqdm
+        setting: 交易设置
     Returns:
         History: 包含完整执行历史的数据对象
 
     """
     if state is None:
+        # 如果没有传入状态信息，则使用 prices 中的最小日期作为初始日期
         state = State(
             date=prices["date"].min(),
             last_rebalance=None,
@@ -109,21 +103,17 @@ def run(
             positions=pd.DataFrame(columns=C_Positions),
         )
 
+    # 初始化历史数据对象
     daily = []
     positions = []
     settlements = []
     trades = []
+
+    # 初始化上次调仓日期
     last_rebalance = state.last_rebalance
 
     prices = prices.sort_values("date")
     date_groups = list(prices.groupby("date"))
-    if show_progress:
-        try:
-            from tqdm import tqdm
-
-            date_groups = tqdm(date_groups, desc="Running strategy")
-        except ImportError:
-            show_progress = False
 
     # 遍历日期分组
     for date, date_prices in date_groups:
@@ -132,22 +122,28 @@ def run(
             # 跳过已执行过的日期
             continue
 
+        # 获得当日行情数据
         date_prices = date_prices[["instrument", "price"]]
+
+        # 执行策略
         v, p, s, t = _run1d(
             strategy,
-            buy_cost,
-            sell_cost,
-            slip_cost,
+            setting,
             date,
             date_prices,
             state,
         )
+
         if t is not None:
+            # 如果有成交记录，则更新上次调仓日期
             last_rebalance = date
+
+        # 更新状态
         state = State(
             date=date, last_rebalance=last_rebalance, value=v, positions=p.copy()
         )
 
+        # 记录历史数据
         daily.append((date, v, t is not None))
         p.insert(0, "date", date)
         positions.append(p)
@@ -188,24 +184,17 @@ def _settlement(
     计算持仓结算后的账户价值和调整后的持仓信息
 
     Args:
-        state (State): 包含当前账户状态的对象，需包含value和positions属性
-        prices (pd.DataFrame): 包含各标的当前价格的数据框，需包含instrument列和price列
+        state (State): 包含当前账户状态的对象
+        prices (pd.DataFrame): 包含各标的当前价格的数据框，列名为 C_Prices
 
     Returns:
         tuple[float, pd.DataFrame, pd.DataFrame]: 包含三个元素的元组：
             - 结算后的总账户价值
-            - 调整后的持仓数据框（包含value和weight列）
-            - 结算记录数据框
-
-    Note:
-        - 当positions为空时直接返回原账户价值和持仓副本
-        - 处理逻辑：
-            1. 计算原持仓总价值
-            2. 合并持仓与价格数据
-            3. 处理价格缺失值（使用前一日价格填充）
-            4. 重新计算持仓价值和权重
+            - 调整后的持仓数据框（包含C_Positions列）
+            - 结算记录数据框 (包含C_Settlements列)
     """
     if state.positions.empty:
+        # 如果持仓为空，则直接返回原账户价值和持仓副本
         return (
             state.value,
             pd.DataFrame(columns=C_Positions),
@@ -242,9 +231,7 @@ def _trade(
     value: float,
     positions: pd.DataFrame,
     new_positions: pd.DataFrame,
-    buy_cost: float,
-    sell_cost: float,
-    slip_cost: float,
+    setting: TraderSetting,
 ) -> pd.DataFrame:
     """
     计算并返回调仓交易详情及交易成本
@@ -253,9 +240,7 @@ def _trade(
         value (float): 投资组合总价值
         positions (pd.DataFrame): 当前持仓数据，包含'instrument'和'weight'列
         new_positions (pd.DataFrame): 目标持仓数据，包含'instrument'和'weight'列
-        buy_cost (float): 买入交易成本率
-        sell_cost (float): 卖出交易成本率
-        slip_cost (float): 滑点成本率
+        setting (TraderSetting): 交易设置
 
     Returns:
         pd.DataFrame: 包含以下列的调仓交易详情:
@@ -278,17 +263,19 @@ def _trade(
     # 计算交易成本
     trades["cost"] = np.where(
         trades["weight_to"] > trades["weight_from"],
-        (trades["weight_to"] - trades["weight_from"]) * value * (buy_cost + slip_cost),
-        (trades["weight_from"] - trades["weight_to"]) * value * (sell_cost + slip_cost),
+        (trades["weight_to"] - trades["weight_from"])
+        * value
+        * (setting.buy_cost + setting.slip_cost),
+        (trades["weight_from"] - trades["weight_to"])
+        * value
+        * (setting.sell_cost + setting.slip_cost),
     )
     return trades
 
 
 def _run1d(
     strategy: Strategy,
-    buy_cost: float,
-    sell_cost: float,
-    slip_cost: float,
+    setting: TraderSetting,
     date: pd.Timestamp,
     prices: pd.DataFrame,
     state: State,
@@ -299,9 +286,7 @@ def _run1d(
 
     Args:
         strategy (Strategy): 策略函数，接收State对象并返回新的持仓信息
-        buy_cost (float): 买入交易成本率
-        sell_cost (float): 卖出交易成本率
-        slip_cost (float): 滑点成本率
+        setting (TraderSetting): 交易设置
         date (pd.Timestamp): 当前日期
         prices (pd.DataFrame): 资产价格数据
         state (State): 当前组合状态对象
@@ -313,6 +298,7 @@ def _run1d(
             - 结算记录DataFrame
             - 交易记录DataFrame
     """
+    # 首先根据昨天的状态和最新行情进行结算.
     value, positions, settlement = _settlement(state, prices)
 
     # 策略函数返回新的持仓信息，支持 DataFrame / list / dict
@@ -349,12 +335,7 @@ def _run1d(
     new_positions["weight"] = new_positions["weight"] / total_weight
     # 计算交易成本，更新总价值
     trades = _trade(
-        value=value,
-        positions=positions,
-        new_positions=new_positions,
-        buy_cost=buy_cost,
-        sell_cost=sell_cost,
-        slip_cost=slip_cost,
+        value=value, positions=positions, new_positions=new_positions, setting=setting
     )
     value -= trades["cost"].sum()
     # 计算新的持仓的价值
