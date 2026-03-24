@@ -138,7 +138,7 @@ def run(
             # 如果有成交记录，则更新上次调仓日期
             last_rebalance = date
 
-        # 更新状态
+        # 根据运行结果更新状态
         state = State(
             date=date, last_rebalance=last_rebalance, value=v, positions=p.copy()
         )
@@ -181,7 +181,7 @@ def _settlement(
     state: State, prices: pd.DataFrame
 ) -> tuple[float, pd.DataFrame, pd.DataFrame]:
     """
-    计算持仓结算后的账户价值和调整后的持仓信息
+    根据当前状态和价格数据进行结算.
 
     Args:
         state (State): 包含当前账户状态的对象
@@ -190,7 +190,7 @@ def _settlement(
     Returns:
         tuple[float, pd.DataFrame, pd.DataFrame]: 包含三个元素的元组：
             - 结算后的总账户价值
-            - 调整后的持仓数据框（包含C_Positions列）
+            - 结算后的持仓数据框（包含C_Positions列）
             - 结算记录数据框 (包含C_Settlements列)
     """
     if state.positions.empty:
@@ -243,11 +243,7 @@ def _trade(
         setting (TraderSetting): 交易设置
 
     Returns:
-        pd.DataFrame: 包含以下列的调仓交易详情:
-            - instrument: 交易标的
-            - weight_from: 原持仓权重
-            - weight_to: 目标持仓权重
-            - cost: 交易成本
+        pd.DataFrame: 包含交易详情的数据框，列名为C_Trades
     """
     # 计算调仓交易详情
     trades = pd.merge(
@@ -301,34 +297,33 @@ def _run1d(
     # 首先根据昨天的状态和最新行情进行结算.
     value, positions, settlement = _settlement(state, prices)
 
-    # 策略函数返回新的持仓信息，支持 DataFrame / list / dict
-    new_positions = strategy(
-        State(
-            date=date,
-            last_rebalance=state.last_rebalance,
-            value=value,
-            positions=positions.copy(),
-        )
+    # 更新计算后状态.
+    state = State(
+        date=date,
+        last_rebalance=state.last_rebalance,
+        value=value,
+        positions=positions.copy(),
     )
 
+    # 以结算后状态运行策略，获得调仓结果.
+    weights = strategy(state)
+
     # 将各种格式统一转换为 DataFrame
-    if new_positions is None:
+    if weights is None:
         # 如果策略函数返回 None，则保持当前持仓不变
         return (value, positions, settlement, None)
-    elif isinstance(new_positions, list):
-        # list[(instrument, weight)] -> DataFrame
-        new_positions = pd.DataFrame(new_positions, columns=["instrument", "weight"])
-    elif isinstance(new_positions, dict):
-        # dict[instrument, weight] -> DataFrame
-        new_positions = pd.DataFrame(
-            list(new_positions.items()), columns=["instrument", "weight"]
-        )
-    # 此时 new_positions 必然是 DataFrame
-    total_weight = new_positions["weight"].sum()
+    elif isinstance(weights, list):
+        weights = pd.DataFrame(weights, columns=["instrument", "weight"])
+    elif isinstance(weights, dict):
+        weights = pd.DataFrame(list(weights.items()), columns=["instrument", "weight"])
+
+    # 总权重.
+    total_weight = weights["weight"].sum()
     if total_weight > 1:
         total_weight = 1
-    # 将新的持仓信息与价格数据合并
-    new_positions = pd.merge(new_positions, prices, on="instrument", how="left")
+
+    # 将新的持仓信息与价格数据合并，开始构建新的positions
+    new_positions = pd.merge(weights, prices, on="instrument", how="left")
     # 如果价格数据中有缺失值，去除对应的持仓
     new_positions = new_positions.dropna()
     # 重新计算持仓权重
